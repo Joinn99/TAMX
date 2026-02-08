@@ -1,0 +1,49 @@
+/* Custom styles for components that need fine-tuned control beyond Tailwind */
+
+/* Scrollbar styling for a cleaner look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+/* Specific styling for the TAM iframe container to ensure it fills space */
+#tam-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: white;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+/* Ensure the JSON editor feels like a proper terminal/code block */
+textarea {
+  tab-size: 2;
+  font-feature-settings: "liga" 0;
+}
+
+/* Tooltip or other overlay styles if needed */
+.custom-shadow {
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}

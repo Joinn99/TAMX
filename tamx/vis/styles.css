@@ -1,0 +1,318 @@
+* {
+    box-sizing: border-box;
+}
+
+html, body, #tam-container {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.tam-layout {
+    display: flex;
+    width: 100%;
+    height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #f5f5f7;
+    overflow: hidden;
+    position: relative;
+}
+
+.tam-chat-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    background-color: #ffffff;
+    border-right: 1px solid #e5e5e5;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    position: relative;
+}
+
+.tam-candidate-menu {
+    position: absolute;
+    z-index: 1000;
+    min-width: 180px;
+    max-width: 320px;
+    background: #ffffff;
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+    font-size: 12px;
+    padding: 6px 0;
+}
+
+.tam-candidate-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tam-candidate-item:hover {
+    background: #f2f2f7;
+}
+
+.tam-candidate-item.selected {
+    background: #e5e5ea;
+    font-weight: 600;
+}
+
+.tam-candidate-label {
+    flex: 1;
+    min-width: 0;
+}
+
+.tam-candidate-bar {
+    width: 80px;
+    height: 6px;
+    background: #f0f0f0;
+    border-radius: 4px;
+    overflow: hidden;
+    flex: 0 0 auto;
+}
+
+.tam-candidate-bar.hidden {
+    visibility: hidden;
+}
+
+.tam-candidate-bar-fill {
+    height: 100%;
+    background: #007aff;
+    border-radius: 4px;
+}
+
+.tam-splitter {
+    width: 6px;
+    background: #e5e5e5;
+    cursor: col-resize;
+    flex: 0 0 6px;
+    transition: background-color 0.2s ease;
+    z-index: 1;
+}
+
+.tam-splitter:hover {
+    background: #d1d1d6;
+}
+
+.tam-resizing * {
+    cursor: col-resize !important;
+    user-select: none;
+}
+
+.tam-vision-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-flow: row wrap;
+    align-content: flex-start;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 20px;
+    background-color: #fafafa;
+}
+
+/* Chat turn styling */
+.tam-turn {
+    display: flex;
+    gap: 12px;
+    max-width: 90%;
+}
+
+.tam-turn.user {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+
+.tam-turn.system {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+
+.tam-turn.assistant {
+    align-self: flex-start;
+}
+
+.tam-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: #007aff;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: bold;
+    flex-shrink: 0;
+}
+
+.tam-turn.user .tam-avatar {
+    background-color: #ff3b30;
+}
+
+.tam-turn.system .tam-avatar {
+    background-color: #34c759;
+}
+
+.tam-message-content {
+    background-color: #f2f2f7;
+    padding: 10px 14px;
+    border-radius: 18px;
+    line-height: 1.4;
+    font-size: 14px;
+    word-wrap: break-word;
+    color: #000000;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.tam-turn.user .tam-message-content {
+    background-color: #e5e5ea;
+    color: #000000;
+}
+
+.tam-turn.system .tam-message-content {
+    background-color: #e5e5ea;
+    color: #000000;
+}
+
+.tam-turn.system .tam-token {
+    color: #000000;
+}
+
+.tam-token {
+    display: inline;
+    padding: 0;
+    margin: 0;
+    border-radius: 2px;
+    transition: all 0.2s ease;
+    cursor: default;
+    white-space: pre-wrap;
+    line-height: 1.4;
+    vertical-align: baseline;
+}
+
+.tam-turn.user .tam-token {
+    color: #000000;
+}
+
+.tam-token.answer {
+    cursor: pointer;
+    display: inline;
+}
+
+.tam-token.prompt {
+    display: inline;
+}
+
+.tam-token.answer:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+.tam-token.vision-link {
+    background-color: #f0f0f0;
+    border: 1px solid #d1d1d6;
+    color: #007aff;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+    margin: 0 2px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    vertical-align: middle;
+    display: inline-block;
+    line-height: 1.2;
+}
+
+.tam-token.vision-link:hover {
+    background-color: #007aff;
+    color: white;
+}
+
+.tam-token.selected {
+    outline: 2px solid #ff3b30;
+    font-weight: bold;
+    box-shadow: 0 0 8px rgba(255, 59, 48, 0.4);
+}
+
+.tam-token.hovered {
+    outline: 2px solid #ff9500;
+    font-weight: bold;
+}
+
+.tam-image-wrapper {
+    flex: 0 0 auto;
+    max-width: calc(50% - 20px);
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    overflow: hidden;
+    position: relative;
+    transition: all 0.5s ease;
+    opacity: 0;
+    transform: translateY(20px);
+    display: none;
+}
+
+.tam-image-wrapper.visible {
+    opacity: 1;
+    transform: translateY(0);
+    display: block;
+}
+
+.tam-image-wrapper.highlighted {
+    outline: 3px solid #007aff;
+    box-shadow: 0 0 15px rgba(0, 122, 255, 0.6);
+    transform: scale(1.02);
+    z-index: 10;
+}
+
+.tam-image-wrapper.hovered {
+    outline: 2px solid #ff9500;
+    box-shadow: 0 0 10px rgba(255, 149, 0, 0.5);
+    transform: scale(1.01);
+    z-index: 9;
+}
+
+.tam-canvas {
+    max-width: 100%;
+    height: auto;
+    display: block;
+}
+
+.tam-tooltip {
+    position: absolute;
+    display: none;
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 1000;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #d1d1d6;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a1a1a6;
+}

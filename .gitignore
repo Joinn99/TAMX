@@ -1,0 +1,43 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test/output/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+uv.lock
+
+# Data and models
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+notebook/*
