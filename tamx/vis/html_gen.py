@@ -138,30 +138,34 @@ def pil_to_data_url(img: Image.Image) -> str:
 
 
 def pack_scores(arr: Optional[Union[np.ndarray, List[float]]]) -> Optional[str]:
-    """Packs an array of scores into a compact string format.
+    """Packs an array of scores into a compact transferable string.
 
-    Uses scientific notation with 3 effective digits (2 decimal places)
-    and fixed width of 8 characters (e.g., "1.23e-01") for each value.
-    This significantly reduces the size of the generated HTML.
+    Encoding strategy:
+      - Convert flattened values to little-endian float16.
+      - Base64-encode the raw bytes.
+      - Prefix with ``f16b64:`` for browser-side decoding.
+
+    This is lossy (float32 -> float16), but substantially smaller than
+    fixed-width scientific-notation strings.
 
     Args:
-        arr: Array or list of non-negative scores.
+        arr: Array or list of scores.
 
     Returns:
-        A packed string or None if input is None.
+        Encoded string, or ``None`` if input is ``None``.
     """
     if arr is None:
         return None
     if isinstance(arr, list):
         if not arr:
-            return ""
+            return "f16b64:"
         arr = np.array(arr)
     if not hasattr(arr, "ravel"):
         return arr
-    
-    # Flatten and format each value to 8 characters: X.XXe±XX
-    return "".join(f"{float(x):.2e}" for x in arr.ravel())
 
+    flat = np.asarray(arr).ravel().astype("<f2", copy=False)
+    b64 = base64.b64encode(flat.tobytes()).decode("ascii")
+    return f"f16b64:{b64}"
 
 def collect_media_order(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Identifies the order and types of media mentioned in the conversation.

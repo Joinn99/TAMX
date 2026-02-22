@@ -320,9 +320,42 @@ class TAMVisualizer {
         }
     }
 
+    float16ToFloat32(h) {
+        const sign = (h & 0x8000) ? -1 : 1;
+        const exp = (h >> 10) & 0x1f;
+        const frac = h & 0x03ff;
+
+        if (exp === 0) {
+            if (frac === 0) return sign * 0;
+            return sign * Math.pow(2, -14) * (frac / 1024);
+        }
+        if (exp === 31) {
+            return frac === 0 ? sign * Infinity : NaN;
+        }
+        return sign * Math.pow(2, exp - 15) * (1 + frac / 1024);
+    }
+
     decodeScores(packed) {
         if (typeof packed !== 'string') return packed;
         if (!packed) return [];
+
+        // New format: float16 raw bytes encoded as base64.
+        if (packed.startsWith('f16b64:')) {
+            const b64 = packed.slice('f16b64:'.length);
+            if (!b64) return new Float32Array(0);
+            const bin = atob(b64);
+            const pairCount = Math.floor(bin.length / 2);
+            const out = new Float32Array(pairCount);
+            for (let i = 0; i < pairCount; i++) {
+                const lo = bin.charCodeAt(i * 2);
+                const hi = bin.charCodeAt(i * 2 + 1);
+                const h = lo | (hi << 8);
+                out[i] = this.float16ToFloat32(h);
+            }
+            return out;
+        }
+
+        // Backward-compatible fallback: fixed-width scientific notation.
         const res = new Float32Array(packed.length / 8);
         for (let i = 0, j = 0; i < packed.length; i += 8, j++) {
             res[j] = parseFloat(packed.substring(i, i + 8));
