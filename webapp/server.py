@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
+from transformers import AutoConfig, AutoProcessor, Qwen3VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
 
 from qwen_vl_utils import process_vision_info
 
@@ -34,6 +34,49 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 TEMP_MEDIA_DIR = os.path.join(REPO_ROOT, "temp_media")
 DEFAULT_MODEL_PATH = os.environ.get("MODEL_PATH", "Qwen/Qwen3-VL-2B-Instruct")
+MODEL_TORCH_DTYPE = os.environ.get("MODEL_TORCH_DTYPE", "bfloat16")
+
+
+
+
+def _resolve_torch_dtype(dtype_name: str):
+    name = (dtype_name or "auto").strip().lower()
+    if name in {"auto", ""}:
+        return "auto"
+    mapping = {
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    if name not in mapping:
+        raise ValueError(f"Unsupported MODEL_TORCH_DTYPE: {dtype_name}")
+    return mapping[name]
+
+def _detect_qwen_vl_family(model_path: str) -> str:
+    """Detect Qwen-VL family from path or HF config.
+
+    Returns one of: "qwen3_vl", "qwen2_5_vl".
+    """
+    path_lower = model_path.lower()
+    if "qwen3-vl" in path_lower or "qwen3_vl" in path_lower:
+        return "qwen3_vl"
+    if "qwen2.5-vl" in path_lower or "qwen2_5-vl" in path_lower or "qwen2_5_vl" in path_lower:
+        return "qwen2_5_vl"
+
+    cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model_type = str(getattr(cfg, "model_type", "")).lower()
+    archs = [str(x).lower() for x in (getattr(cfg, "architectures", None) or [])]
+    probe = " ".join([model_type] + archs)
+
+    if "qwen3_vl" in probe or "qwen3vl" in probe:
+        return "qwen3_vl"
+    if "qwen2_5_vl" in probe or "qwen2.5_vl" in probe or "qwen2.5-vl" in probe:
+        return "qwen2_5_vl"
+
+    raise ValueError(f"Unsupported model family for TAMX: {model_path} (model_type={model_type}, archs={archs})")
 
 
 class GenerationConfig(BaseModel):
@@ -60,11 +103,17 @@ class VisualizationRequest(BaseModel):
 
 class ModelManager:
     """Manages the lifecycle and loading of the MLLM and its processor."""
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, torch_dtype: str = "bfloat16"):
         self.model_path = model_path
         self.model = None
         self.processor = None
         self.lm_head_weight = None
+        self.model_family = _detect_qwen_vl_family(model_path)
+        self.torch_dtype = _resolve_torch_dtype(torch_dtype)
+
+    @property
+    def image_patch_size(self) -> int:
+        return 16 if self.model_family == "qwen3_vl" else 14
 
     def load(self) -> Tuple[Any, Any, torch.Tensor]:
         """Loads the model, processor, and LM head weights if not already loaded.
@@ -73,10 +122,14 @@ class ModelManager:
             Tuple of (model, processor, lm_head_weight).
         """
         if self.model is None:
-            model_class = Qwen3VLForConditionalGeneration if "Qwen3-VL" in self.model_path else Qwen2_5_VLForConditionalGeneration
+            model_class = (
+                Qwen3VLForConditionalGeneration
+                if self.model_family == "qwen3_vl"
+                else Qwen2_5_VLForConditionalGeneration
+            )
             self.model = model_class.from_pretrained(
                 self.model_path,
-                torch_dtype="auto",
+                torch_dtype=self.torch_dtype,
                 device_map="auto",
                 trust_remote_code=True,
             )
@@ -88,7 +141,7 @@ class ModelManager:
         return self.model, self.processor, self.lm_head_weight
 
 
-model_manager = ModelManager(DEFAULT_MODEL_PATH)
+model_manager = ModelManager(DEFAULT_MODEL_PATH, torch_dtype=MODEL_TORCH_DTYPE)
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -216,7 +269,7 @@ def visualize(req: VisualizationRequest):
     )
     image_inputs, video_inputs, video_kwargs = process_vision_info(
         messages,
-        image_patch_size=16 if "Qwen3-VL" in model_manager.model_path else 14,
+        image_patch_size=model_manager.image_patch_size,
         return_video_metadata=True,
         return_video_kwargs=True,
     )
