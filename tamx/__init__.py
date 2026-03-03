@@ -5,6 +5,7 @@ Multimodal Large Language Models.
 """
 
 from .core import compute_tam
+from .inject import GazeInjector
 
 __version__ = "0.1.0"
-__all__ = ["compute_tam"]
+__all__ = ["compute_tam", "GazeInjector"]

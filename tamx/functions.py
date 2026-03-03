@@ -22,10 +22,15 @@ def least_squares(map1: np.ndarray, map2: np.ndarray) -> float:
     if np.sum(map2 ** 2) < 1e-12:
         return 0.0
 
-    from scipy.optimize import minimize_scalar
-    result = minimize_scalar(objective, args=(map1, map2))
-    return float(result.x)
-
+    # from scipy.optimize import minimize_scalar
+    # result = minimize_scalar(objective, args=(map1, map2))
+    # return float(result.x)
+    # Closed-form least-squares solution: min_x ||map1 - x*map2||^2
+    # => x = (map1·map2) / (map2·map2)
+    dot = np.tensordot(map1, map2, axes=map1.ndim)
+    denom = np.tensordot(map2, map2, axes=map2.ndim)
+    x = dot / max(denom, 1e-12)
+    return x
 
 def normalize_scores(
     img_scores: np.ndarray,
@@ -452,3 +457,90 @@ def normalize_answer_scores(
         normalized_cand_vision.append(this_step_cand_vision)
 
     return normalized_text, normalized_vision, normalized_cand_text, normalized_cand_vision
+
+
+def compute_eci_gate(
+    h_last: torch.Tensor,                  # [d], current hidden state
+    visual_hidden_states: torch.Tensor,    # [n_v, d], F^v
+    vision_activations: np.ndarray,        # [n_v, n_unique], precomputed by compute_vision_activations
+    ctx_hidden_states: torch.Tensor,       # [n_ctx, d]
+    ctx_ids: List[int],                    # context token ids
+    id_to_idx: Dict[int, int],
+    tau: Optional[float] = None,
+) -> float:
+    """Compute ECI-style gate gamma_i for gaze injection.
+
+    Mirrors the ECI computation in compute_vision_maps but uses the
+    current decoding hidden state h_last as query instead of a known
+    answer-token weight.
+
+    Returns:
+        gamma (float): gate value in [0, 1].
+    """
+    # Cast to float32, sanitize NaN/Inf, clamp to a safe range.
+    # bfloat16 hidden states can reach +/-3.38e38 (bfloat16 max); when two
+    # such values appear in the same 2048-dim dot product, the result overflows
+    # float32 to +/-inf, and inf + (-inf) = NaN.
+    # Clamping at SAFE_CLIP prevents overflow while preserving the same scale
+    # as vision_activations (both built from the same clipped F^v in injector).
+    SAFE_CLIP = 300.0   # well above typical LLM hidden-state magnitudes (~50)
+
+    def _safe_f32(t: torch.Tensor) -> torch.Tensor:
+        t = torch.nan_to_num(t.detach().to(dtype=torch.float32))
+        return t.clamp(-SAFE_CLIP, SAFE_CLIP)
+
+    h_f32   = _safe_f32(h_last)                 # [d]
+    F_v_f32 = _safe_f32(visual_hidden_states)   # [n_v, d]
+    ctx_f32 = _safe_f32(ctx_hidden_states)      # [n_ctx, d]
+
+    # 1. Raw proxy activation: relu(F^v . h_last) -- same scale as vision_activations
+    a_raw_np = torch.relu(F_v_f32 @ h_f32).cpu().numpy()   # [n_v]
+
+    # 2. Text relevance weights: relu(h_ctx . h_last)
+    r_np = torch.relu(ctx_f32 @ h_f32).cpu().numpy()       # [n_ctx]
+    r_sum = r_np.sum()
+    if r_sum > 1e-8:
+        r_weights = r_np / r_sum
+    else:
+        r_weights = np.ones(len(r_np)) / max(len(r_np), 1)
+
+    # 3. Tau: passed as GazeInjector.tau_ref, calibrated from
+    #    relu(F_v @ h_ans).sum() across answer positions at construction time.
+    #    Falls back to a rough estimate from a_raw if not provided.
+    if tau is not None:
+        tau_val = tau
+    else:
+        pos = a_raw_np[a_raw_np > 0]
+        tau_val = float(np.median(pos)) * max(len(a_raw_np), 1) if pos.size > 0 else 1.0
+
+    # 4. Text interference map (reuses vision_activations)
+    # Build ctx_mask and ctx_indices together so both stay in sync.
+    # Generated tokens may not be in id_to_idx (it was built from the
+    # prefill input_ids only), so we filter them out of BOTH arrays to
+    # prevent a shape mismatch in the matmul below.
+    ctx_mask    = [i for i, cid in enumerate(ctx_ids) if cid in id_to_idx]
+    ctx_indices = [id_to_idx[ctx_ids[i]] for i in ctx_mask]
+    if not ctx_indices:
+        total = float(a_raw_np.sum())
+        return total / (total + tau_val + 1e-8)
+
+    # Re-normalise r_weights over the surviving entries
+    r_weights_filtered = r_weights[ctx_mask]
+    r_sum_f = r_weights_filtered.sum()
+    if r_sum_f > 1e-8:
+        r_weights_filtered = r_weights_filtered / r_sum_f
+    else:
+        r_weights_filtered = np.ones(len(ctx_mask)) / len(ctx_mask)
+
+    a_ctx = vision_activations[:, ctx_indices]   # [n_v, n_ctx_filtered]
+    e = a_ctx @ r_weights_filtered               # [n_v]
+
+    # 5. ECI: subtract text-driven contribution
+    scale = least_squares(a_raw_np, e)
+    a_causal = np.maximum(0.0, a_raw_np - scale * e)   # [n_v]
+
+    # 6. Gate via L1-norm ratio with stable tau
+    total = float(a_causal.sum())
+    gamma = total / (total + tau_val + 1e-8)
+    return gamma
+
