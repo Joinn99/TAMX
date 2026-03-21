@@ -4,11 +4,33 @@ This module helps identify vision blocks, conversation turns, and token position
 within the multimodal model's input/output sequences.
 """
 
-from typing import List, Dict, Set, Any, Optional
-from qwen_vl_utils import process_vision_info
+from typing import List, Dict, Any, Optional, Mapping
+
+from .qwen import QwenSpecialTokenIds, normalize_special_token_ids
 
 
-def parse_seq_qwenvl(ids: List[int], num_generated_tokens: Optional[int] = None) -> Dict[str, Any]:
+_DEFAULT_QWEN_SPECIAL_TOKEN_IDS = QwenSpecialTokenIds(
+    im_start_id=151644,
+    im_end_id=151645,
+    vision_start_id=151652,
+    vision_end_id=151653,
+    image_pad_id=151655,
+    video_pad_id=151656,
+    assistant_id=77091,
+    user_id=872,
+    system_id=8948,
+    newline_id=198,
+    double_newline_id=None,
+    think_start_id=151667,
+    think_end_id=151668,
+)
+
+
+def parse_seq_qwenvl(
+    ids: List[int],
+    num_generated_tokens: Optional[int] = None,
+    special_token_ids: Optional[Mapping[str, Optional[int]] | QwenSpecialTokenIds] = None,
+) -> Dict[str, Any]:
     """
     Step 0: Parse sequence structure
     
@@ -21,23 +43,23 @@ def parse_seq_qwenvl(ids: List[int], num_generated_tokens: Optional[int] = None)
         - 'ctx_text_pos': List of positions for text tokens before the answer.
         - 'turns': List of dicts representing each message turn.
     """
-    # Define special token IDs for Qwen-VL
-    VISION_START_ID = 151652
-    VISION_END_ID = 151653
-    IMAGE_PAD_ID = 151655
-    VIDEO_PAD_ID = 151656
-    IM_START_ID = 151644
-    IM_END_ID = 151645
-    ASSISTANT_ID = 77091 # "assistant"
-    SYSTEM_ID = 8948 # "system"
-    USER_ID = 872 # "user"
-    NEWLINE_ID = 198 # "\n"
+    token_ids = normalize_special_token_ids(special_token_ids) or _DEFAULT_QWEN_SPECIAL_TOKEN_IDS
 
-    SPECIAL_IDS_SET = {
-        IM_START_ID, IM_END_ID,
-        ASSISTANT_ID, USER_ID, SYSTEM_ID,
-        VISION_START_ID, VISION_END_ID, IMAGE_PAD_ID, VIDEO_PAD_ID
-    }
+    VISION_START_ID = token_ids.vision_start_id
+    VISION_END_ID = token_ids.vision_end_id
+    IMAGE_PAD_ID = token_ids.image_pad_id
+    VIDEO_PAD_ID = token_ids.video_pad_id
+    IM_START_ID = token_ids.im_start_id
+    IM_END_ID = token_ids.im_end_id
+    ASSISTANT_ID = token_ids.assistant_id
+    SYSTEM_ID = token_ids.system_id
+    USER_ID = token_ids.user_id
+    NEWLINE_ID = token_ids.newline_id
+    DOUBLE_NEWLINE_ID = token_ids.double_newline_id
+    THINK_START_ID = token_ids.think_start_id
+    THINK_END_ID = token_ids.think_end_id
+
+    SPECIAL_IDS_SET = token_ids.special_ids_set
 
     # 1. Identify all vision blocks and their types
     vision_blocks = []
@@ -80,9 +102,12 @@ def parse_seq_qwenvl(ids: List[int], num_generated_tokens: Optional[int] = None)
                 
                 # Content start (skip role and optional newline)
                 content_start = role_p + 1
-                if content_start < len(ids) and ids[content_start] == NEWLINE_ID:
+                while content_start < len(ids) and ids[content_start] in {
+                    NEWLINE_ID,
+                    DOUBLE_NEWLINE_ID,
+                }:
                     content_start += 1
-                
+
                 turn_idx = len(turns)
                 # Check for vision blocks within this turn
                 turn_vision_blocks = []
@@ -103,11 +128,22 @@ def parse_seq_qwenvl(ids: List[int], num_generated_tokens: Optional[int] = None)
                             curr = vb['end'] + 1
                             break
                     if is_vision: continue
+
+                    if THINK_START_ID is not None and ids[curr] == THINK_START_ID:
+                        curr += 1
+                        while curr < end_p and ids[curr] != THINK_END_ID:
+                            curr += 1
+                        if curr < end_p and THINK_END_ID is not None and ids[curr] == THINK_END_ID:
+                            curr += 1
+                        while curr < end_p and ids[curr] in {NEWLINE_ID, DOUBLE_NEWLINE_ID}:
+                            curr += 1
+                        continue
+
                     if ids[curr] not in SPECIAL_IDS_SET:
                         turn_pos.append(curr)
                     curr += 1
                 
-                if turn_pos or turn_vision_blocks:
+                if turn_pos or turn_vision_blocks or (role == "assistant" and end_p == len(ids)):
                     turns.append({
                         "role": role,
                         "pos": turn_pos,

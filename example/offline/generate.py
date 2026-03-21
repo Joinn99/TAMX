@@ -1,7 +1,9 @@
+import os
+
 import torch
 import safetensors.torch as st
-from qwen_vl_utils import process_vision_info
-from transformers import Qwen3VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
+
+from tamx.qwen import build_qwen_inputs, load_qwen_model_bundle
 
 messages_generate = [
     {
@@ -13,38 +15,15 @@ messages_generate = [
     }
 ]
 
-def gen_test_case(messages, save_name, processor, model, save_dir="asset/output"):
-    text = processor.apply_chat_template(
-        messages,
-        tokenize=False,
+def gen_test_case(messages, save_name, processor, model, model_info, save_dir="asset/output"):
+    prompt_text, inputs, _, _, _, _ = build_qwen_inputs(
+        processor=processor,
+        model_info=model_info,
+        messages=messages,
         add_generation_prompt=True,
+        enable_thinking=False,
+        device=model.device,
     )
-
-    image_inputs, video_inputs, video_kwargs = process_vision_info(
-        messages,
-        image_patch_size=16 if "Qwen3-VL" in model_name else 14,
-        return_video_metadata=True,
-        return_video_kwargs=True,
-    )
-
-    if video_inputs is not None:
-        video_inputs, video_metadatas = zip(*video_inputs)
-        video_inputs, video_metadatas = list(video_inputs), list(video_metadatas)
-    else:
-        video_metadatas = None
-        
-    inputs = processor(
-        text=text,
-        images=image_inputs,
-        videos=video_inputs,
-        video_metadata=video_metadatas,
-        padding=True,
-        do_resize=False,
-        return_tensors="pt",
-        **video_kwargs,
-    )
-
-    inputs = inputs.to(model.device)
 
     # Generate model output with hidden states for visualization
     outputs = model.generate(
@@ -86,18 +65,15 @@ def gen_test_case(messages, save_name, processor, model, save_dir="asset/output"
         }, f"{save_dir}/{save_name}.safetensors")
     print(f"Saved to {save_dir}/{save_name}.safetensors")
 
-    return text, inputs, outputs
+    return prompt_text, inputs, outputs
 
 if __name__ == "__main__":
-    import os
-    model_name = os.environ.get("MODEL_PATH", "Qwen/Qwen3-VL-2B-Instruct")
+    model_name = os.environ.get("MODEL_PATH", "/data/zoo/Qwen3.5-2B")
 
-    assert "Qwen3-VL" in model_name
-
-    model_class = Qwen3VLForConditionalGeneration if "Qwen3-VL" in model_name else Qwen2_5_VLForConditionalGeneration
-    model = model_class.from_pretrained(
-        model_name, torch_dtype="auto", device_map="auto"
+    model, processor, model_info = load_qwen_model_bundle(
+        model_name,
+        torch_dtype="auto",
+        device_map="auto",
     )
-    processor = AutoProcessor.from_pretrained(model_name)
 
-    gen_test_case(messages_generate, "generate", processor, model)
+    gen_test_case(messages_generate, "generate", processor, model, model_info)

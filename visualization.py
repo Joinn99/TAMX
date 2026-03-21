@@ -22,9 +22,7 @@ from tamx.vis.html_gen import (
     explode_video_blocks,
 )
 
-from transformers import AutoProcessor
-from transformers import Qwen3VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
-from qwen_vl_utils import process_vision_info
+from tamx.qwen import build_qwen_inputs, get_lm_head_weight, load_qwen_model_bundle
 
 
 def save_pil_to_local(img: Image.Image, output_dir: str) -> str:
@@ -53,8 +51,7 @@ def save_file_to_local(source_path: str, output_dir: str) -> str:
 
 
 if __name__ == "__main__":
-    model_path = os.environ.get("MODEL_PATH", "Qwen/Qwen3-VL-2B-Instruct")
-    assert "Qwen3-VL" in model_path
+    model_path = os.environ.get("MODEL_PATH", "/data/zoo/Qwen3.5-2B")
 
     # Test cases with their data and messages
     test_cases = [
@@ -72,14 +69,13 @@ if __name__ == "__main__":
         }
     ]
 
-    print("Loading processor...")
-    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    
-    # We still need the lm_head_weight for compute_tam
-    print("Loading head weight...")
-    model_class = Qwen3VLForConditionalGeneration if "Qwen3-VL" in model_path else Qwen2_5_VLForConditionalGeneration
-    model = model_class.from_pretrained(model_path)
-    head_weight = model.lm_head.weight.detach().to(torch.bfloat16)
+    print("Loading processor and model metadata...")
+    model, processor, model_info = load_qwen_model_bundle(
+        model_path,
+        torch_dtype="auto",
+        device_map="cpu",
+    )
+    head_weight = get_lm_head_weight(model).detach().to(torch.bfloat16)
     del model # Free memory
 
     import time
@@ -97,18 +93,14 @@ if __name__ == "__main__":
         # 1. Load messages and process vision info
         with open(case["message"], "r") as f:
             messages = json.load(f)
-        
-        image_inputs, video_inputs, video_kwargs = process_vision_info(
-            messages,
-            image_patch_size=16 if "Qwen3-VL" in model_path else 14,
-            return_video_metadata=True,
-            return_video_kwargs=True,
+
+        _, _, image_inputs, video_inputs, _, _ = build_qwen_inputs(
+            processor=processor,
+            model_info=model_info,
+            messages=messages,
+            add_generation_prompt=False,
+            enable_thinking=False,
         )
-        if video_inputs is not None:
-            video_inputs, video_metadatas = zip(*video_inputs)
-            video_inputs, video_metadatas = list(video_inputs), list(video_metadatas)
-        else:
-            video_metadatas = None
 
         # 2. Load TAM data
         data = load_file(case["data"])
@@ -126,6 +118,7 @@ if __name__ == "__main__":
             candidate_token_ids=candidate_token_ids,
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
+            special_token_ids=model_info.special_token_ids.to_dict(),
             apply_filter=True,
             apply_eci=True,
             kernel_size=5,
@@ -163,5 +156,4 @@ if __name__ == "__main__":
 
     end_time = time.time()
     print(f"\nTotal time taken: {end_time - start_time:.2f} seconds")
-
 

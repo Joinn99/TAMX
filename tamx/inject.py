@@ -32,7 +32,7 @@ Usage::
 
 import numpy as np
 import torch
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Mapping
 
 from .functions import (
     assign_grids,
@@ -101,6 +101,7 @@ class GazeInjector:
         lm_head_weight: torch.Tensor,        # [V, d]
         image_grid_thw: Optional[torch.Tensor] = None,
         video_grid_thw: Optional[torch.Tensor] = None,
+        special_token_ids: Optional[Mapping[str, Optional[int]]] = None,
         alpha: float = 1.0,
         tau: Optional[float] = None,
         spatial_merge_size: Optional[int] = None,
@@ -130,7 +131,7 @@ class GazeInjector:
         ids = input_ids.tolist()
 
         # Step 0: parse sequence structure (identical to compute_tam)
-        struct = parse_seq_qwenvl(ids)
+        struct = parse_seq_qwenvl(ids, special_token_ids=special_token_ids)
         vision_blocks = struct["vision_blocks"]
 
         assign_grids(
@@ -186,7 +187,7 @@ class GazeInjector:
         # is on the exact same scale as a_raw inside compute_eci_gate.
         tau_ref: Optional[float] = tau   # skip if user provided explicit tau
         if tau is None:
-            struct = parse_seq_qwenvl(ids)
+            struct = parse_seq_qwenvl(ids, special_token_ids=special_token_ids)
             ans_pos_list = struct["ans_pos"]
             raw_sums = []
             for ap in ans_pos_list:

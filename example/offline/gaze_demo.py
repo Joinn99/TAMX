@@ -8,7 +8,7 @@ creates a gaze map, then for each answer-token position prints:
   - ECI gate γ_i and the bias applied to the actual chosen token
 
 Usage (from repo root):
-    MODEL_PATH=Qwen/Qwen3-VL-2B-Instruct python example/offline/gaze_demo.py
+    MODEL_PATH=/data/zoo/Qwen3.5-2B python example/offline/gaze_demo.py
 """
 
 import os
@@ -16,12 +16,12 @@ import sys
 import torch
 import safetensors.torch as st
 import numpy as np
-from transformers import Qwen3VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
 
 # Make sure the repo root is on the path so `tamx` is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tamx import GazeInjector
+from tamx.qwen import get_lm_head_weight, load_qwen_model_bundle
 from tamx.utils import parse_seq_qwenvl
 
 # ---------------------------------------------------------------------------
@@ -34,17 +34,15 @@ SEED = 42
 # ---------------------------------------------------------------------------
 # Load model (needed for lm_head weights)
 # ---------------------------------------------------------------------------
-model_name = os.environ.get("MODEL_PATH", "Qwen/Qwen3-VL-2B-Instruct")
+model_name = os.environ.get("MODEL_PATH", "/data/zoo/Qwen3.5-2B")
 print(f"[gaze_demo] Loading model: {model_name}")
 
-if "Qwen3-VL" in model_name:
-    model_class = Qwen3VLForConditionalGeneration
-else:
-    model_class = Qwen2_5_VLForConditionalGeneration
-
-model = model_class.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+model, processor, model_info = load_qwen_model_bundle(
+    model_name,
+    torch_dtype="auto",
+    device_map="auto",
+)
 model.eval()
-processor = AutoProcessor.from_pretrained(model_name)
 
 # ---------------------------------------------------------------------------
 # Load encode output
@@ -79,7 +77,7 @@ print(f"[gaze_demo] Sequence length: {len(ids)},  hidden dim: {hidden_states.sha
 # ---------------------------------------------------------------------------
 # Parse sequence to find vision-token positions and answer positions
 # ---------------------------------------------------------------------------
-struct = parse_seq_qwenvl(ids)
+struct = parse_seq_qwenvl(ids, special_token_ids=model_info.special_token_ids)
 vision_blocks = struct["vision_blocks"]
 ans_pos = struct["ans_pos"]
 ctx_text_pos = struct["ctx_text_pos"]
@@ -117,9 +115,10 @@ injector = GazeInjector.from_encode_output(
     gaze_map=gaze_map,
     hidden_states=hidden_states,
     input_ids=input_ids,
-    lm_head_weight=model.lm_head.weight,
+    lm_head_weight=get_lm_head_weight(model),
     image_grid_thw=image_grid_thw,
     video_grid_thw=video_grid_thw,
+    special_token_ids=model_info.special_token_ids.to_dict(),
     alpha=ALPHA,
     tau=None,   # auto-calibrate each step
 )
@@ -128,7 +127,7 @@ print(f"[gaze_demo] gaze_bias shape: {injector.gaze_bias.shape}")
 # ---------------------------------------------------------------------------
 # Pre-cache lm_head weight on CPU in float32 for fast logit computation
 # ---------------------------------------------------------------------------
-lm_head_w = model.lm_head.weight.detach().to(device="cpu", dtype=torch.float32)  # [V, d]
+lm_head_w = get_lm_head_weight(model).detach().to(device="cpu", dtype=torch.float32)  # [V, d]
 
 # ---------------------------------------------------------------------------
 # Offline walkthrough: compare top-5 before/after gaze injection
@@ -191,4 +190,3 @@ for step_i, ans_p in enumerate(ans_pos):
 
 print("\n" + "=" * 72)
 print("[gaze_demo] Done. No decoding was modified.")
-

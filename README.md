@@ -89,7 +89,7 @@ TAM generates interactive HTML dashboards that make model analysis intuitive. Yo
 
 ```bash
 # Run the sample visualization script
-export MODEL_PATH="Qwen/Qwen3-VL-2B-Instruct"
+export MODEL_PATH="Qwen/Qwen3.5-2B"
 python example/offline/encode.py        # Encoding hidden states for generated tokens
 python example/offline/generate.py      # Generating text together with candidates and hidden states
 python visualization.py                 # Visualizing the results
@@ -102,7 +102,7 @@ The output will be a standalone HTML file (like our [interactive example](#🕹�
 ## 🌐 Interactive Web App
 
 ```bash
-export MODEL_PATH="Qwen/Qwen3-VL-2B-Instruct"
+export MODEL_PATH="Qwen/Qwen3.5-2B"
 
 python -m uvicorn webapp.server:app --host 0.0.0.0 --port 8016
 ```
@@ -122,7 +122,13 @@ Then open your browser and go to http://localhost:8016.
 
 ## Supported Models
 
-Currently, TAMX supports all [Qwen3-VL](https://huggingface.co/collections/Qwen/qwen3-vl) series models and [Qwen2.5-VL](https://huggingface.co/collections/Qwen/qwen25-vl) series models.
+Currently, TAMX supports [Qwen2.5-VL](https://huggingface.co/collections/Qwen/qwen25-vl), [Qwen3-VL](https://huggingface.co/collections/Qwen/qwen3-vl), and multimodal [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-2B) models.
+
+For Qwen3.5, use a recent `transformers` build with native `qwen3_5` support. At the time of writing, the Hugging Face main branch is required:
+
+```bash
+uv pip install --upgrade "transformers @ git+https://github.com/huggingface/transformers.git@main"
+```
 
 ---
 

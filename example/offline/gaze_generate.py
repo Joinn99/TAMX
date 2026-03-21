@@ -13,7 +13,7 @@ Pipeline:
        b. calls injector.inject(logits, h_last, ctx_hs, ctx_ids) before sampling.
 
 Usage (from repo root):
-    MODEL_PATH=Qwen/Qwen3-VL-2B-Instruct python example/offline/gaze_generate.py
+    MODEL_PATH=/data/zoo/Qwen3.5-2B python example/offline/gaze_generate.py
 """
 
 import os
@@ -23,17 +23,19 @@ import numpy as np
 import pandas as pd
 from typing import List, Optional
 from transformers import (
-    AutoProcessor,
     LogitsProcessor,
     LogitsProcessorList,
-    Qwen3VLForConditionalGeneration,
-    Qwen2_5_VLForConditionalGeneration,
 )
-from qwen_vl_utils import process_vision_info
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tamx import GazeInjector
+from tamx.qwen import (
+    build_qwen_inputs,
+    find_final_norm,
+    get_lm_head_weight,
+    load_qwen_model_bundle,
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -48,17 +50,15 @@ TAU_COVERAGE   = 3.0     # coverage decay speed: lower = faster decay
 # ---------------------------------------------------------------------------
 # Load model
 # ---------------------------------------------------------------------------
-model_name = os.environ.get("MODEL_PATH", "Qwen/Qwen3-VL-2B-Instruct")
+model_name = os.environ.get("MODEL_PATH", "/data/zoo/Qwen3.5-2B")
 print(f"[gaze_generate] Loading model: {model_name}")
 
-model_class = (
-    Qwen3VLForConditionalGeneration
-    if "Qwen3-VL" in model_name
-    else Qwen2_5_VLForConditionalGeneration
+model, processor, model_info = load_qwen_model_bundle(
+    model_name,
+    torch_dtype="auto",
+    device_map="auto",
 )
-model = model_class.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
 model.eval()
-processor = AutoProcessor.from_pretrained(model_name)
 
 # ---------------------------------------------------------------------------
 # Gaze map
@@ -87,35 +87,15 @@ messages = [
 # Helper: build processor inputs from messages
 # ---------------------------------------------------------------------------
 def build_inputs(msgs, add_generation_prompt: bool):
-    text = processor.apply_chat_template(
-        msgs,
-        tokenize=False,
+    _, inputs, _, _, _, _ = build_qwen_inputs(
+        processor=processor,
+        model_info=model_info,
+        messages=msgs,
         add_generation_prompt=add_generation_prompt,
+        enable_thinking=False,
+        device=model.device,
     )
-    image_patch_size = 16 if "Qwen3-VL" in model_name else 14
-    image_inputs, video_inputs, video_kwargs = process_vision_info(
-        msgs,
-        image_patch_size=image_patch_size,
-        return_video_metadata=True,
-        return_video_kwargs=True,
-    )
-    if video_inputs is not None:
-        video_inputs, video_metadatas = zip(*video_inputs)
-        video_inputs, video_metadatas = list(video_inputs), list(video_metadatas)
-    else:
-        video_metadatas = None
-
-    inputs = processor(
-        text=text,
-        images=image_inputs,
-        videos=video_inputs,
-        video_metadata=video_metadatas,
-        padding=True,
-        do_resize=False,
-        return_tensors="pt",
-        **video_kwargs,
-    )
-    return inputs.to(model.device)
+    return inputs
 
 # ---------------------------------------------------------------------------
 # Step 1 — Prefill pass (mirrors encode.py)
@@ -178,9 +158,10 @@ injector = GazeInjector.from_encode_output(
     gaze_map=gaze_map,
     hidden_states=hidden_states,
     input_ids=input_ids,
-    lm_head_weight=model.lm_head.weight,
+    lm_head_weight=get_lm_head_weight(model),
     image_grid_thw=image_grid_thw,
     video_grid_thw=video_grid_thw,
+    special_token_ids=model_info.special_token_ids.to_dict(),
     alpha=args.alpha,
     tau=None,          # auto-calibrate from prefill hidden states
     tau_coverage=TAU_COVERAGE,
@@ -206,21 +187,7 @@ class _HiddenStateBuffer:
 
 hs_buffer = _HiddenStateBuffer()
 
-# Locate the final layer-norm robustly across Qwen model variants:
-#   Qwen2.5-VL → model.model.norm
-#   Qwen3-VL   → model.model.language_model.norm
-def _find_final_norm(model):
-    lm = model.model
-    if hasattr(lm, 'norm'):
-        return lm.norm
-    elif hasattr(lm, 'language_model') and hasattr(lm.language_model, 'norm'):
-        return lm.language_model.norm
-    raise AttributeError(
-        f"Cannot find final norm in {type(lm).__name__}. "
-        "Inspect model.model with named_children() to find the correct path."
-    )
-
-final_norm = _find_final_norm(model)
+final_norm = find_final_norm(model)
 print(f"[gaze_generate] Hooking final norm: {type(final_norm).__name__}")
 _hook_handle = final_norm.register_forward_hook(hs_buffer.hook_fn)
 

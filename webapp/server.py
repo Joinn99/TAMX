@@ -17,11 +17,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image
-from transformers import AutoConfig, AutoProcessor, Qwen3VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
-
-from qwen_vl_utils import process_vision_info
 
 from tamx.core import compute_tam
+from tamx.qwen import (
+    build_qwen_inputs,
+    get_lm_head_weight,
+    load_qwen_model_bundle,
+    resolve_torch_dtype,
+)
 from tamx.vis.html_gen import (
     build_tam_html,
     collect_media_order,
@@ -33,50 +36,8 @@ from tamx.vis.html_gen import (
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 TEMP_MEDIA_DIR = os.path.join(REPO_ROOT, "temp_media")
-DEFAULT_MODEL_PATH = os.environ.get("MODEL_PATH", "Qwen/Qwen3-VL-2B-Instruct")
+DEFAULT_MODEL_PATH = os.environ.get("MODEL_PATH", "/data/zoo/Qwen3.5-2B")
 MODEL_TORCH_DTYPE = os.environ.get("MODEL_TORCH_DTYPE", "bfloat16")
-
-
-
-
-def _resolve_torch_dtype(dtype_name: str):
-    name = (dtype_name or "auto").strip().lower()
-    if name in {"auto", ""}:
-        return "auto"
-    mapping = {
-        "bfloat16": torch.bfloat16,
-        "bf16": torch.bfloat16,
-        "float16": torch.float16,
-        "fp16": torch.float16,
-        "float32": torch.float32,
-        "fp32": torch.float32,
-    }
-    if name not in mapping:
-        raise ValueError(f"Unsupported MODEL_TORCH_DTYPE: {dtype_name}")
-    return mapping[name]
-
-def _detect_qwen_vl_family(model_path: str) -> str:
-    """Detect Qwen-VL family from path or HF config.
-
-    Returns one of: "qwen3_vl", "qwen2_5_vl".
-    """
-    path_lower = model_path.lower()
-    if "qwen3-vl" in path_lower or "qwen3_vl" in path_lower:
-        return "qwen3_vl"
-    if "qwen2.5-vl" in path_lower or "qwen2_5-vl" in path_lower or "qwen2_5_vl" in path_lower:
-        return "qwen2_5_vl"
-
-    cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    model_type = str(getattr(cfg, "model_type", "")).lower()
-    archs = [str(x).lower() for x in (getattr(cfg, "architectures", None) or [])]
-    probe = " ".join([model_type] + archs)
-
-    if "qwen3_vl" in probe or "qwen3vl" in probe:
-        return "qwen3_vl"
-    if "qwen2_5_vl" in probe or "qwen2.5_vl" in probe or "qwen2.5-vl" in probe:
-        return "qwen2_5_vl"
-
-    raise ValueError(f"Unsupported model family for TAMX: {model_path} (model_type={model_type}, archs={archs})")
 
 
 class GenerationConfig(BaseModel):
@@ -108,37 +69,29 @@ class ModelManager:
         self.model = None
         self.processor = None
         self.lm_head_weight = None
-        self.model_family = _detect_qwen_vl_family(model_path)
-        self.torch_dtype = _resolve_torch_dtype(torch_dtype)
+        self.model_info = None
+        self.torch_dtype = resolve_torch_dtype(torch_dtype)
 
     @property
     def image_patch_size(self) -> int:
-        return 16 if self.model_family == "qwen3_vl" else 14
+        if self.model_info is None:
+            raise RuntimeError("Model metadata is not loaded yet.")
+        return self.model_info.image_patch_size
 
-    def load(self) -> Tuple[Any, Any, torch.Tensor]:
+    def load(self) -> Tuple[Any, Any, torch.Tensor, Any]:
         """Loads the model, processor, and LM head weights if not already loaded.
 
         Returns:
-            Tuple of (model, processor, lm_head_weight).
+            Tuple of (model, processor, lm_head_weight, model_info).
         """
         if self.model is None:
-            model_class = (
-                Qwen3VLForConditionalGeneration
-                if self.model_family == "qwen3_vl"
-                else Qwen2_5_VLForConditionalGeneration
-            )
-            self.model = model_class.from_pretrained(
+            self.model, self.processor, self.model_info = load_qwen_model_bundle(
                 self.model_path,
                 torch_dtype=self.torch_dtype,
                 device_map="auto",
-                trust_remote_code=True,
             )
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_path,
-                trust_remote_code=True,
-            )
-            self.lm_head_weight = self.model.get_input_embeddings().weight
-        return self.model, self.processor, self.lm_head_weight
+            self.lm_head_weight = get_lm_head_weight(self.model)
+        return self.model, self.processor, self.lm_head_weight, self.model_info
 
 
 model_manager = ModelManager(DEFAULT_MODEL_PATH, torch_dtype=MODEL_TORCH_DTYPE)
@@ -261,34 +214,17 @@ def visualize(req: VisualizationRequest):
     last_role = messages[-1]["role"]
     generate_answer = last_role == "user"
 
-    model, processor, lm_head_weight = model_manager.load()
+    model, processor, lm_head_weight, model_info = model_manager.load()
 
     add_generation_prompt = generate_answer
-    text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=add_generation_prompt
+    _, inputs, image_inputs, video_inputs, _, _ = build_qwen_inputs(
+        processor=processor,
+        model_info=model_info,
+        messages=messages,
+        add_generation_prompt=add_generation_prompt,
+        enable_thinking=False,
+        device=model.device,
     )
-    image_inputs, video_inputs, video_kwargs = process_vision_info(
-        messages,
-        image_patch_size=model_manager.image_patch_size,
-        return_video_metadata=True,
-        return_video_kwargs=True,
-    )
-    if video_inputs is not None:
-        video_inputs, video_metadatas = zip(*video_inputs)
-        video_inputs, video_metadatas = list(video_inputs), list(video_metadatas)
-    else:
-        video_metadatas = None
-    inputs = processor(
-        text=text,
-        images=image_inputs,
-        videos=video_inputs,
-        video_metadata=video_metadatas,
-        do_resize=False,
-        padding=True,
-        return_tensors="pt",
-        **video_kwargs,
-    )
-    inputs = inputs.to(model.device)
 
     generation_cfg = req.generation or GenerationConfig()
     vis_cfg = req.visualization or VisualizationConfig()
@@ -338,6 +274,7 @@ def visualize(req: VisualizationRequest):
         candidate_token_ids=candidate_ids_per_step,
         image_grid_thw=inputs.get("image_grid_thw"),
         video_grid_thw=inputs.get("video_grid_thw"),
+        special_token_ids=model_info.special_token_ids.to_dict(),
         apply_filter=vis_cfg.apply_filter,
         apply_eci=vis_cfg.apply_eci,
         kernel_size=vis_cfg.kernel_size,

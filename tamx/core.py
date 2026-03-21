@@ -5,7 +5,7 @@ of vision and text tokens for the assistant's response in a multimodal model.
 """
 
 import torch
-from typing import List, Dict, Any, Tuple, Optional, Union
+from typing import List, Dict, Any, Tuple, Optional, Union, Mapping
 from .utils import parse_seq_qwenvl
 from .functions import (
     assign_grids,
@@ -26,6 +26,7 @@ def compute_tam(
     candidate_token_ids: Optional[torch.Tensor] = None,
     image_grid_thw: Optional[torch.Tensor] = None,
     video_grid_thw: Optional[torch.Tensor] = None,
+    special_token_ids: Optional[Mapping[str, Optional[int]]] = None,
     apply_eci: bool = True,
     apply_filter: bool = True,
     kernel_size: int = 3,
@@ -44,6 +45,7 @@ def compute_tam(
         candidate_token_ids: Optional candidate token IDs for each step.
         image_grid_thw: Grid dimensions (T, H, W) for each image in the sequence.
         video_grid_thw: Grid dimensions (T, H, W) for each video in the sequence.
+        special_token_ids: Tokenizer-dependent special token ids used for parsing.
         apply_eci: Whether to apply Error-Corrected Interpretability. Defaults to True.
         apply_filter: Whether to apply smoothing filters to vision maps. Defaults to True.
         kernel_size: Kernel size for the filtering. Defaults to 3.
@@ -66,7 +68,11 @@ def compute_tam(
     
     # Step 0: Parse sequence structure
     num_gen = candidate_token_ids.shape[0] if candidate_token_ids is not None else None
-    struct = parse_seq_qwenvl(ids, num_generated_tokens=num_gen)
+    struct = parse_seq_qwenvl(
+        ids,
+        num_generated_tokens=num_gen,
+        special_token_ids=special_token_ids,
+    )
     vision_blocks = struct['vision_blocks']
     ans_pos = struct['ans_pos']
     ctx_text_pos = struct['ctx_text_pos']
