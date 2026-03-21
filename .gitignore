@@ -40,4 +40,5 @@ uv.lock
 *.pt
 *.pth
 
-notebook/*
+notebook/
+asset/

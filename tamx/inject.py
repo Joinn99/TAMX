@@ -1,12 +1,14 @@
 """Gaze-guided logit injection for personalized VLM decoding.
 
-Implements TAM-gated gaze logit bias injection::
+Implements TAM-gated gaze logit bias injection with coverage decay::
 
-    logits += alpha * gamma_i * gaze_bias
+    logits += alpha * gamma_i * delta_i * gaze_bias
 
 where:
   - ``gaze_bias``  = lm_head_weight @ v_G   (offline, gaze-weighted visual feature)
   - ``gamma_i``    = ECI-style gate          (online, per-decoding-step)
+  - ``delta_i``    = exp(-coverage / tau_cov)  (coverage decay, reduces injection
+                     automatically once gaze-related content has been generated)
 
 Usage::
 
@@ -18,10 +20,14 @@ Usage::
         lm_head_weight=model.lm_head.weight,
         image_grid_thw=...,
         alpha=1.0,
+        tau_coverage=3.0,           # coverage decay speed (default 3.0)
     )
 
     # 2. Inside a custom decoding loop, each step
-    logits = injector.inject(logits, h_last, ctx_hidden_states, ctx_ids)
+    logits, gamma, delta = injector.inject(
+        logits, h_last, ctx_hidden_states, ctx_ids,
+        last_generated_token_id=prev_token_id,
+    )
 """
 
 import numpy as np
@@ -58,6 +64,11 @@ class GazeInjector:
         alpha: float = 1.0,
         tau: Optional[float] = None,
         tau_ref: Optional[float] = None,     # global baseline for auto-tau
+        # --- Coverage Decay ---
+        v_G: Optional[torch.Tensor] = None,             # [d] calibrated gaze feature
+        lm_head_weight: Optional[torch.Tensor] = None,  # [V, d]
+        tau_coverage: float = 3.0,
+        gaze_bias_normalized: Optional[torch.Tensor] = None,
     ):
         self.gaze_bias = gaze_bias
         self.visual_hidden_states = visual_hidden_states
@@ -68,6 +79,14 @@ class GazeInjector:
         # tau_ref: mean ||relu(F^v @ h_ans)||_1 across answer positions.
         # Used as the auto-tau baseline so gamma varies meaningfully per step.
         self.tau_ref = tau_ref
+        # Coverage decay attributes
+        self.v_G = v_G                       # calibrated gaze feature vector [d]
+        self.lm_head_weight = lm_head_weight  # [V, d]
+        self.tau_coverage = tau_coverage
+        self.coverage = 0.0
+        self.step_count = 0
+        self.delta_history: List[dict] = []
+        self.gaze_bias_normalized = gaze_bias_normalized
 
     # ------------------------------------------------------------------
     # Construction
@@ -86,6 +105,7 @@ class GazeInjector:
         tau: Optional[float] = None,
         spatial_merge_size: Optional[int] = None,
         temporal_merge_size: Optional[int] = None,
+        tau_coverage: float = 3.0,           # coverage decay speed parameter
     ) -> "GazeInjector":
         """Construct a :class:`GazeInjector` directly from ``encode.py`` outputs.
 
@@ -177,6 +197,9 @@ class GazeInjector:
                     raw_sums.append(raw)
             tau_ref = float(np.median(raw_sums)) if raw_sums else None
 
+        # Step 7: normalize gaze_bias for coverage decay
+        gaze_bias_normalized = gaze_bias / (gaze_bias.norm() + 1e-8)
+
         return cls(
             gaze_bias=gaze_bias,
             visual_hidden_states=F_v,
@@ -185,6 +208,10 @@ class GazeInjector:
             alpha=alpha,
             tau=tau,
             tau_ref=tau_ref,
+            v_G=v_G_calibrated,
+            lm_head_weight=lm_head_weight,
+            tau_coverage=tau_coverage,
+            gaze_bias_normalized=gaze_bias_normalized,
         )
 
     # ------------------------------------------------------------------
@@ -211,6 +238,24 @@ class GazeInjector:
             tau=effective_tau,
         )
 
+    def compute_coverage_decay(self, generated_token_id: int) -> float:
+    # 用归一化后的 gaze_bias 值
+    # self.gaze_bias_normalized 在 from_encode_output 中预计算:
+    #   self.gaze_bias_normalized = self.gaze_bias / (self.gaze_bias.norm() + eps)
+        score = self.gaze_bias_normalized[generated_token_id].item()
+        
+        if score > 0:
+            self.coverage += score
+        
+        delta_i = np.exp(-self.coverage / self.tau_coverage)
+        return delta_i
+
+    def reset_coverage(self):
+        """Reset coverage state before each new generate() call."""
+        self.coverage = 0.0
+        self.step_count = 0
+        self.delta_history = []
+
     @torch.no_grad()
     def inject(
         self,
@@ -218,15 +263,25 @@ class GazeInjector:
         h_last: torch.Tensor,            # [d]
         ctx_hidden_states: torch.Tensor, # [n_ctx, d]
         ctx_ids: List[int],
-    ) -> torch.Tensor:
+        last_generated_token_id: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, float, float]:
         """Apply gaze-gated bias to a single-step logit vector.
 
+        Args:
+            last_generated_token_id: Token id generated at the previous step.
+                First step should pass ``None`` (no decay applied, δ_i = 1.0).
+
         Returns:
-            ``logits + alpha * γ_i * gaze_bias``
+            Tuple of (injected_logits, gamma_i, delta_i).
+            Formula: ``logits + alpha * γ_i * δ_i * gaze_bias``
         """
         gamma = self.compute_gate(h_last, ctx_hidden_states, ctx_ids)
+        if last_generated_token_id is not None and self.v_G is not None:
+            delta_i = self.compute_coverage_decay(last_generated_token_id)
+        else:
+            delta_i = 1.0
         bias = self.gaze_bias.to(device=logits.device, dtype=logits.dtype)
-        return logits + self.alpha * gamma * bias
+        return logits + self.alpha * gamma * delta_i * bias, gamma, delta_i
 
     @torch.no_grad()
     def compute_logit_bias(
@@ -234,12 +289,25 @@ class GazeInjector:
         h_last: torch.Tensor,            # [d]
         ctx_hidden_states: torch.Tensor, # [n_ctx, d]
         ctx_ids: List[int],
-    ) -> Tuple[torch.Tensor, float]:
+        last_generated_token_id: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, float, float]:
         """Compute the effective logit bias *without* modifying anything.
 
         Returns:
-            (effective_bias [V] in float32, gamma float)
+            (effective_bias [V] in float32, gamma float, delta_i float)
         """
         gamma = self.compute_gate(h_last, ctx_hidden_states, ctx_ids)
+        if last_generated_token_id is not None and self.v_G is not None:
+            import torch.nn.functional as F
+            w_t = self.lm_head_weight[last_generated_token_id].float()
+            v_G = self.v_G.float()
+            cos_sim = F.cosine_similarity(
+                w_t.unsqueeze(0),
+                v_G.to(device=w_t.device).unsqueeze(0),
+            ).item()
+            temp_coverage = self.coverage + (cos_sim if cos_sim > 0 else 0.0)
+            delta_i = float(np.exp(-temp_coverage / self.tau_coverage))
+        else:
+            delta_i = 1.0
         # gaze_bias is already float32; keep it that way for accurate reporting
-        return self.alpha * gamma * self.gaze_bias, gamma
+        return self.alpha * gamma * delta_i * self.gaze_bias, gamma, delta_i

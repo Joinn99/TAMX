@@ -62,6 +62,7 @@ def gen_test_case(messages, save_name, processor, model, save_dir="asset/output"
 
     hidden_state = torch.cat([feats[-1] for feats in outputs.hidden_states], dim=1)[:, :-1, :]
     generated_ids = inputs["input_ids"]
+    print(f"Generated IDs first 10: {generated_ids[0,:10]}")
 
     os.makedirs(save_dir, exist_ok=True)
 
@@ -76,6 +77,7 @@ def gen_test_case(messages, save_name, processor, model, save_dir="asset/output"
         "video_grid_thw": inputs.get("video_grid_thw", torch.empty(0)),
         }, f"{save_dir}/{save_name}.safetensors"
     )
+    print(f"Saved to {save_dir}/{save_name}.safetensors")
 
 
 if __name__ == "__main__":

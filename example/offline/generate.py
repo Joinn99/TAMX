@@ -65,6 +65,7 @@ def gen_test_case(messages, save_name, processor, model, save_dir="asset/output"
     generated = processor.decode(outputs.sequences[0, inputs["input_ids"].shape[1]:], skip_special_tokens=True)
     messages.append({"role": "assistant", "content": [{"type": "text", "text": generated}]})
 
+    print(f"Generated: {generated}")
     candidate_ids_per_step = torch.cat([
                 step_scores[0].topk(3).indices.unsqueeze(0)
                 for step_scores in outputs.scores
@@ -83,6 +84,7 @@ def gen_test_case(messages, save_name, processor, model, save_dir="asset/output"
         "image_grid_thw": inputs.get("image_grid_thw", torch.empty(0)),
         "video_grid_thw": inputs.get("video_grid_thw", torch.empty(0)),
         }, f"{save_dir}/{save_name}.safetensors")
+    print(f"Saved to {save_dir}/{save_name}.safetensors")
 
     return text, inputs, outputs
 

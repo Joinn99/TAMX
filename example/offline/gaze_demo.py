@@ -166,7 +166,7 @@ for step_i, ans_p in enumerate(ans_pos):
         orig_logits = lm_head_w @ h_last.cpu()           # [V]
 
         # Gaze bias
-        effective_bias, gamma = injector.compute_logit_bias(h_last, ctx_hs, ctx_ids_list)
+        effective_bias, gamma, delta_i = injector.compute_logit_bias(h_last, ctx_hs, ctx_ids_list)
         new_logits = orig_logits + effective_bias.cpu()  # [V]
 
     # Top-K before and after
@@ -182,7 +182,7 @@ for step_i, ans_p in enumerate(ans_pos):
 
     bias_for_tok = effective_bias[tok_id].item()
 
-    print(f"\nStep {step_i:3d} | actual token = '{tok_str}' (id={tok_id})  γ={gamma:.4f}  bias_for_tok={bias_for_tok:+.3f}")
+    print(f"\nStep {step_i:3d} | actual token = '{tok_str}' (id={tok_id})  γ={gamma:.4f}  δ={delta_i:.4f}  bias_for_tok={bias_for_tok:+.3f}")
     print(f"  {'Original Top-' + str(TOP_K):<30}  {'Injected Top-' + str(TOP_K):<30}")
     print(f"  {'─'*30}  {'─'*30}")
     for (ot, ov), (nt, nv) in zip(orig_top, new_top):

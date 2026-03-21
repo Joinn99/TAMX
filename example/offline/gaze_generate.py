@@ -40,9 +40,10 @@ from tamx import GazeInjector
 # ---------------------------------------------------------------------------
 IMAGE_FILE     = "asset/road_sign_asphalt_road.jpg"
 GAZE_CSV       = "asset/sample.csv"
-ALPHA          = 0.4
 MAX_NEW_TOKENS = 128
 SAFE_CLIP      = 300.0   # same as encode.py / inject.py
+SHOW_TOP_K     = True    # print top-3 candidates + logits per decoding step
+TAU_COVERAGE   = 3.0     # coverage decay speed: lower = faster decay
 
 # ---------------------------------------------------------------------------
 # Load model
@@ -168,6 +169,11 @@ print(f"[gaze_generate] Prefill done — seq_len={hidden_states.shape[0]}, "
 # ---------------------------------------------------------------------------
 print("[gaze_generate] Building GazeInjector …")
 
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--alpha", type=float, default=0.3)
+args = parser.parse_args()
+
 injector = GazeInjector.from_encode_output(
     gaze_map=gaze_map,
     hidden_states=hidden_states,
@@ -175,8 +181,9 @@ injector = GazeInjector.from_encode_output(
     lm_head_weight=model.lm_head.weight,
     image_grid_thw=image_grid_thw,
     video_grid_thw=video_grid_thw,
-    alpha=ALPHA,
-    tau=None,   # auto-calibrate from prefill hidden states
+    alpha=args.alpha,
+    tau=None,          # auto-calibrate from prefill hidden states
+    tau_coverage=TAU_COVERAGE,
 )
 print(f"[gaze_generate] gaze_bias shape: {injector.gaze_bias.shape},  "
       f"tau_ref={injector.tau_ref:.4g}" if injector.tau_ref else
@@ -228,7 +235,13 @@ class GazeLogitsProcessor(LogitsProcessor):
       - h_last comes from the shared _HiddenStateBuffer written by the hook.
     """
 
-    def __init__(self, injector: GazeInjector, hs_buffer: _HiddenStateBuffer):
+    def __init__(
+        self,
+        injector: GazeInjector,
+        hs_buffer: _HiddenStateBuffer,
+        show_top_k: bool = False,
+        top_k: int = 3,
+    ):
         self.injector    = injector
         self.hs_buffer   = hs_buffer
         self.step        = 0
@@ -236,6 +249,13 @@ class GazeLogitsProcessor(LogitsProcessor):
         self.ctx_hs_list: List[torch.Tensor] = []   # accumulated [d] tensors, on F_v device
         self._F_v        = injector.visual_hidden_states   # [n_v, d]
         self._fv_device  = injector.visual_hidden_states.device  # target device for h tensors
+        self.show_top_k  = show_top_k
+        self.top_k       = top_k
+        # list of (step, [(token_str, logit), ...]) recorded when show_top_k=True
+        self.top_k_log: List[tuple] = []
+        # Coverage decay: track last generated token id
+        self.last_token_id: Optional[int] = None
+        self.injector.reset_coverage()          # reset coverage state for this run
 
     def __call__(
         self,
@@ -262,19 +282,34 @@ class GazeLogitsProcessor(LogitsProcessor):
         out = scores.clone()
         for b in range(scores.shape[0]):
             logits_b = scores[b].float().cpu()
-            injected = self.injector.inject(logits_b, h_last, ctx_hs, ctx_ids)
+            injected, gamma_i, delta_i = self.injector.inject(
+                logits_b, h_last, ctx_hs, ctx_ids,
+                last_generated_token_id=self.last_token_id,
+            )
             out[b] = injected.to(device=scores.device, dtype=scores.dtype)
+
+        # Record top-k candidates from the (post-injection) logits of batch[0]
+        if self.show_top_k:
+            logits0 = out[0].float().cpu()
+            topk_vals, topk_ids = torch.topk(logits0, self.top_k)
+            candidates = [
+                (processor.tokenizer.decode([tid.item()]), val.item())
+                for tid, val in zip(topk_ids, topk_vals)
+            ]
+            self.top_k_log.append((self.step, candidates))
 
         # Save h_last (on _fv_device) and predicted token for next step's context
         self.ctx_hs_list.append(h_last.clone())
-        next_tok = scores[0].argmax().item()
+        next_tok = out[0].argmax().item()
         self.ctx_ids.append(next_tok)
+        # Update last_token_id for coverage decay computation in the next step
+        self.last_token_id = next_tok
         self.step += 1
 
         return out
 
 
-gaze_processor = GazeLogitsProcessor(injector, hs_buffer)
+gaze_processor = GazeLogitsProcessor(injector, hs_buffer, show_top_k=SHOW_TOP_K)
 
 # ---------------------------------------------------------------------------
 # Step 3c — Run model.generate() with injection
@@ -307,4 +342,20 @@ print("=" * 72)
 print(generated_text)
 print("=" * 72)
 print(f"[gaze_generate] Injection applied at {gaze_processor.step} decoding steps.")
+
+if SHOW_TOP_K and gaze_processor.top_k_log:
+    print("\n" + "=" * 72)
+    print(f"[gaze_generate] Per-step top-{gaze_processor.top_k} candidates (post-injection logits):")
+    print("=" * 72)
+    header = f"{'Step':>5}  " + "  ".join(f"{'Rank '+str(r+1):<22}" for r in range(gaze_processor.top_k))
+    print(header)
+    print("-" * len(header))
+    for step_idx, candidates in gaze_processor.top_k_log:
+        cols = []
+        for tok_str, logit in candidates:
+            tok_repr = repr(tok_str) if (not tok_str or tok_str.isspace()) else tok_str
+            cols.append(f"{tok_repr[:12]:<12} {logit:>8.3f}")
+        print(f"{step_idx:>5}  " + "  ".join(cols))
+    print("=" * 72)
+
 print("[gaze_generate] Done.")
